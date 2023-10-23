@@ -320,6 +320,9 @@ public class CardEdge extends javacard.framework.Applet {
 
     /* For the setup function - should only be called once */
     private boolean setupDone = false;
+
+    // Multi-Step Install variables
+    private short install_step = 0;
     
     // shared cryptographic objects
     private RandomData randomData;
@@ -498,20 +501,20 @@ public class CardEdge extends javacard.framework.Applet {
             // recommended as after ~ 100000 writes it will kill the EEPROM cells...
             recvBuffer = new byte[EXT_APDU_BUFFER_SIZE];
         }
-        
+
         // common cryptographic objects
         randomData = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
-        sigECDSA= Signature.getInstance(ALG_ECDSA_SHA_256, false); 
+        sigECDSA= Signature.getInstance(ALG_ECDSA_SHA_256, false);
         sha256= MessageDigest.getInstance(MessageDigest.ALG_SHA_256, false);
         aes128= Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_ECB_NOPAD, false);
         HmacSha160.init(tmpBuffer);
         HmacSha512.init(tmpBuffer);
         try {
-            keyAgreement = KeyAgreement.getInstance(ALG_EC_SVDP_DH_PLAIN_XY, false); 
+            keyAgreement = KeyAgreement.getInstance(ALG_EC_SVDP_DH_PLAIN_XY, false);
         } catch (CryptoException e) {
             ISOException.throwIt(SW_UNSUPPORTED_FEATURE);// unsupported feature => use a more recent card!
         }
-        
+
         //secure channel objects
         try {
             sc_buffer = JCSystem.makeTransientByteArray((short) SIZE_SC_BUFFER, JCSystem.CLEAR_ON_DESELECT);
@@ -525,25 +528,32 @@ public class CardEdge extends javacard.framework.Applet {
         } catch (SystemException e) {
             ISOException.throwIt(SW_UNSUPPORTED_FEATURE);// unsupported feature => use a more recent card!
         }
-        
+
         // secure channel
         sc_sessionkey= (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_128, false); // todo: make transient?
         sc_ephemeralkey= (ECPrivateKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PRIVATE, LENGTH_EC_FP_256, false);
-        sc_aes128_cbc= Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false); 
-                
-        // perso PKI: generate public/private keypair
+        sc_aes128_cbc= Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
+
+        install_step = 1;
+
+        // debug
+        register();
+    } // end of constructor
+
+    private boolean complete_install() {
+            // perso PKI: generate public/private keypair
         authentikey_private= (ECPrivateKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PRIVATE, LENGTH_EC_FP_256, false);
         Secp256k1.setCommonCurveParameters(authentikey_private);
-        authentikey_public= (ECPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PUBLIC, LENGTH_EC_FP_256, false); 
+        authentikey_public= (ECPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_EC_FP_PUBLIC, LENGTH_EC_FP_256, false);
         Secp256k1.setCommonCurveParameters(authentikey_public);
         //authentikey_pair= new KeyPair(authentikey_public, authentikey_private);
         //authentikey_pair.genKeyPair(); //=> cap file fails to load!
         randomData.generateData(recvBuffer, (short)0, BIP32_KEY_SIZE);
         authentikey_private.setS(recvBuffer, (short)0, BIP32_KEY_SIZE); //random value first
-        keyAgreement.init(authentikey_private);   
+        keyAgreement.init(authentikey_private);
         keyAgreement.generateSecret(Secp256k1.SECP256K1, Secp256k1.OFFSET_SECP256K1_G, (short) 65, recvBuffer, (short)0); //pubkey in uncompressed form => silently fail after cap loaded
         authentikey_public.setW(recvBuffer, (short)0, (short)65);
-        
+
         // BIP32 material
         bip32_masterkey= (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
         bip32_masterchaincode= (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
@@ -551,29 +561,29 @@ public class CardEdge extends javacard.framework.Applet {
         bip32_encryptkey= (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_128, false);
         randomData.generateData(recvBuffer, (short) 0, (short)16);
         bip32_encryptkey.setKey(recvBuffer, (short)0);
-        
+
         // private key array
         eckeys = new Key[MAX_NUM_KEYS];
-        
+
         // Transaction signing
         Transaction.init();
         transactionData= new byte[OFFSET_TRANSACTION_SIZE];
-        
+
         // 2FA
         data2FA= new byte[OFFSET_2FA_SIZE];
         aes128_cbc= Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
         key_2FA= (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_128, false);
-        
+
         // card label
-        card_label = new byte[MAX_CARD_LABEL_SIZE];  
-        
+        card_label = new byte[MAX_CARD_LABEL_SIZE];
+
         // import from SeedKeeper
-        trusted_pubkey = new byte[PUBKEY_SIZE];
+        //trusted_pubkey = new byte[PUBKEY_SIZE];
         secret_sc_sessionkey = (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_128, false);
-        
-        // debug
-        register();
-    } // end of constructor
+
+        install_step = 2;
+        return true;
+    }
 
     public static void install(byte[] bArray, short bOffset, byte bLength) {
         CardEdge wal = new CardEdge(bArray, bOffset, bLength);
@@ -587,6 +597,10 @@ public class CardEdge extends javacard.framework.Applet {
         
         //todo: clear secure channel values?
         initialized_secure_channel=false;
+
+        if (install_step < 2) {
+            complete_install();
+        }
         
         return true;
     }
